@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Editor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            background: #f5f5f5;
+        }
+        .header { 
+            background: white; 
+            padding: 1rem; 
+            border-bottom: 1px solid #e1e5e9;
+            display: flex;
+            justify-content: between;
+            align-items: center;
+        }
+        .container { 
+            display: flex; 
+            height: calc(100vh - 60px); 
+        }
+        .sidebar { 
+            width: 300px; 
+            background: white; 
+            border-right: 1px solid #e1e5e9;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+        .editor-area { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+        }
+        .toolbar { 
+            background: white; 
+            padding: 0.5rem 1rem; 
+            border-bottom: 1px solid #e1e5e9;
+            display: flex;
+            gap: 0.5rem;
+        }
+        .editor { 
+            flex: 1; 
+            background: white; 
+            margin: 1rem; 
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        textarea { 
+            width: 100%; 
+            height: 100%; 
+            border: none; 
+            padding: 1rem; 
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            resize: none;
+            outline: none;
+        }
+        .users-list { 
+            margin-top: 1rem; 
+        }
+        .user-item { 
+            padding: 0.5rem; 
+            border-radius: 5px; 
+            margin-bottom: 0.5rem;
+            background: #f8f9fa;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .user-avatar { 
+            width: 8px; 
+            height: 8px; 
+            border-radius: 50%; 
+            background: #28a745;
+        }
+        button { 
+            padding: 0.5rem 1rem; 
+            background: #667eea; 
+            color: white; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer;
+        }
+        button:hover { 
+            background: #5a6fd8; 
+        }
+        .status { 
+            padding: 0.25rem 0.5rem; 
+            border-radius: 3px; 
+            font-size: 0.8rem; 
+            margin-left: auto;
+        }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .document-item { 
+            padding: 0.75rem; 
+            border: 1px solid #e1e5e9; 
+            border-radius: 5px; 
+            margin-bottom: 0.5rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .document-item:hover { 
+            background: #f8f9fa; 
+        }
+        .document-item.active { 
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>Real-Time Editor</h2>
+        <div>
+            <span id="user-info"></span>
+            <button onclick="logout()" style="margin-left: 1rem;">Logout</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <h3>Documents</h3>
+            <div id="documents-list">
+                <!-- Documents will be populated here -->
+            </div>
+            
+            <button onclick="createNewDocument()" style="width: 100%; margin-top: 1rem;">
+                + New Document
+            </button>
+
+            <div class="users-list">
+                <h4>Online Users</h4>
+                <div id="online-users">
+                    <!-- Online users will appear here -->
+                </div>
+            </div>
+        </div>
+
+        <div class="editor-area">
+            <div class="toolbar">
+                <button onclick="saveDocument()">Save</button>
+                <span id="connection-status" class="status disconnected">Disconnected</span>
+                <span id="document-info" style="margin-left: auto;"></span>
+            </div>
+            
+            <div class="editor">
+                <textarea id="editor" placeholder="Start typing..."></textarea>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket = null;
+        let currentDocument = null;
+        let currentVersion = 0;
+        let isConnected = false;
+
+        // Initialize application
+        async function init() {
+            const tokens = getTokens();
+            if (!tokens) {
+                window.location.href = 'login.html';
+                return;
+            }
+
+            await connectSocket(tokens.accessToken);
+            loadUserProfile();
+            loadDocuments();
+        }
+
+        function getTokens() {
+            const tokens = localStorage.getItem('tokens');
+            return tokens ? JSON.parse(tokens) : null;
+        }
+
+        function connectSocket(token) {
+            return new Promise((resolve, reject) => {
+                socket = io({
+                    auth: { token }
+                });
+
+                socket.on('connect', () => {
+                    console.log('Connected to server');
+                    isConnected = true;
+                    updateConnectionStatus('connected');
+                    resolve();
+                });
+
+                socket.on('disconnect', () => {
+                    console.log('Disconnected from server');
+                    isConnected = false;
+                    updateConnectionStatus('disconnected');
+                });
+
+                socket.on('connect_error', (error) => {
+                    console.error('Connection error:', error);
+                    if (error.message.includes('Authentication')) {
+                        logout();
+                    }
+                    reject(error);
+                });
+
+                // Document events
+                socket.on('doc:fullsync', handleFullSync);
+                socket.on('doc:patch', handleRemotePatch);
+                socket.on('doc:patch:ack', handlePatchAck);
+                socket.on('doc:mismatch', handleVersionMismatch);
+                socket.on('doc:user_joined', handleUserJoined);
+                socket.on('doc:user_left', handleUserLeft);
+
+                // Presence events
+                socket.on('presence:update', handlePresenceUpdate);
+            });
+        }
+
+        function handleFullSync(data) {
+            currentDocument = data.docId;
+            currentVersion = data.version;
+            document.getElementById('editor').value = data.content;
+            updateDocumentInfo(data.title, data.version);
+        }
+
+        function handleRemotePatch(data) {
+            if (data.docId === currentDocument) {
+                // Apply patch from other user
+                applyPatch(data.patch);
+                currentVersion = data.version;
+                updateDocumentInfo(null, data.version);
+            }
+        }
+
+        function handlePatchAck(data) {
+            if (data.accepted) {
+                currentVersion = data.version;
+                updateDocumentInfo(null, data.version);
+            }
+        }
+
+        function handleVersionMismatch(data) {
+            // Conflict resolution needed
+            console.warn('Version mismatch:', data);
+            // In a real app, you'd implement proper conflict resolution
+            currentVersion = data.currentVersion;
+            document.getElementById('editor').value = data.currentContent;
+            updateDocumentInfo(null, data.currentVersion);
+        }
+
+        function handleUserJoined(data) {
+            addOnlineUser(data.userId, data.userName);
+        }
+
+        function handleUserLeft(data) {
+            removeOnlineUser(data.userId);
+        }
+
+        function handlePresenceUpdate(data) {
+            // Update cursor positions, selections, etc.
+            console.log('Presence update:', data);
+        }
+
+        function applyPatch(patch) {
+            const editor = document.getElementById('editor');
+            let content = editor.value;
+
+            // Simple patch application (replace with proper OT in production)
+            if (patch.type === 'replace') {
+                content = patch.content;
+            } else if (patch.type === 'insert') {
+                content = content.slice(0, patch.position) + 
+                         patch.content + 
+                         content.slice(patch.position);
+            } else if (patch.type === 'delete') {
+                content = content.slice(0, patch.position) + 
+                         content.slice(patch.position + patch.length);
+            }
+
+            editor.value = content;
+        }
+
+        // UI update functions
+        function updateConnectionStatus(status) {
+            const element = document.getElementById('connection-status');
+            element.textContent = status === 'connected' ? 'Connected' : 'Disconnected';
+            element.className = `status ${status === 'connected' ? 'connected' : 'disconnected'}`;
+        }
+
+        function updateDocumentInfo(title, version) {
+            const element = document.getElementById('document-info');
+            if (title) {
+                element.textContent = `${title} - v${version}`;
+            } else {
+                element.textContent = `v${version}`;
+            }
+        }
+
+        function addOnlineUser(userId, userName) {
+            const usersList = document.getElementById('online-users');
+            const userElement = document.createElement('div');
+            userElement.className = 'user-item';
+            userElement.id = `user-${userId}`;
+            userElement.innerHTML = `
+                <div class="user-avatar"></div>
+                ${userName}
+            `;
+            usersList.appendChild(userElement);
+        }
+
+        function removeOnlineUser(userId) {
+            const userElement = document.getElementById(`user-${userId}`);
+            if (userElement) {
+                userElement.remove();
+            }
+        }
+
+        function loadUserProfile() {
+            const tokens = getTokens();
+            // In a real app, you'd fetch user profile from API
+            document.getElementById('user-info').textContent = 'User';
+        }
+
+        async function loadDocuments() {
+            // Mock documents - in real app, fetch from API
+            const documents = [
+                { id: 'doc1', title: 'Welcome Document', version: 1 },
+                { id: 'doc2', title: 'Project Notes', version: 2 }
+            ];
+
+            const list = document.getElementById('documents-list');
+            list.innerHTML = '';
+
+            documents.forEach(doc => {
+                const item = document.createElement('div');
+                item.className = 'document-item';
+                item.textContent = doc.title;
+                item.onclick = () => openDocument(doc.id);
+                list.appendChild(item);
+            });
+        }
+
+        function openDocument(docId) {
+            if (currentDocument) {
+                socket.emit('doc:unsubscribe', currentDocument);
+            }
+
+            socket.emit('doc:subscribe', docId);
+            currentDocument = docId;
+
+            // Update UI
+            document.querySelectorAll('.document-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.target.classList.add('active');
+        }
+
+        function createNewDocument() {
+            const title = prompt('Enter document title:');
+            if (title) {
+                // In real app, create document via API then subscribe
+                console.log('Creating new document:', title);
+            }
+        }
+
+        // Editor event handlers
+        let lastContent = '';
+        let debounceTimer = null;
+
+        document.getElementById('editor').addEventListener('input', (event) => {
+            const content = event.target.value;
+            
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                if (content !== lastContent && currentDocument) {
+                    sendPatch(lastContent, content);
+                    lastContent = content;
+                }
+            }, 300);
+        });
+
+        function sendPatch(oldContent, newContent) {
+            // Simple diff - replace with proper diff algorithm in production
+            const patch = {
+                type: 'replace',
+                content: newContent,
+                timestamp: Date.now()
+            };
+
+            socket.emit('doc:patch', {
+                docId: currentDocument,
+                patch: patch,
+                version: currentVersion,
+                clientId: generateClientId()
+            });
+        }
+
+        function generateClientId() {
+            return `client-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        }
+
+        function saveDocument() {
+            // Manual save trigger
+            console.log('Manual save triggered');
+        }
+
+        function logout() {
+            localStorage.removeItem('tokens');
+            if (socket) {
+                socket.disconnect();
+            }
+            window.location.href = 'login.html';
+        }
+
+        // Initialize app when page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
