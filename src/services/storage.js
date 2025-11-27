@@ -155,7 +155,7 @@ export class S3Storage {
       filename: fileData.originalname,
       size: fileData.buffer.length,
       mimeType: fileData.mimetype,
-      location: `https://Fredi-store.onrender.com/bucket/${fileData.originalname}`
+      location: `https://minio.fredi.com/bucket/${fileData.originalname}`
     };
   }
 
