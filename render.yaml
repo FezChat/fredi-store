@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: realtime-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        fromDatabase:
+          name: mongodb-atlas
+          property: connectionString
